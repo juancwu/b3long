@@ -1,12 +1,12 @@
 // @ts-nocheck
-import type { NextPage } from "next";
-import { signOut, useSession } from "next-auth/react";
+import type { GetServerSideProps, NextPage } from "next";
+import { getSession, signOut } from "next-auth/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 import { Simulation } from "d3";
 import { DiscordGuildData } from "./api/getNodes";
-import Loader from "../components/loading";
-import { useRouter } from "next/router";
+import Loader from "../components/loader";
+import NavBar from "../components/navbar";
 
 interface ViewBox {
   x: number;
@@ -33,14 +33,25 @@ function getPoint(e) {
   return point;
 }
 
-const Graph: NextPage = () => {
-  const session = useSession();
-  const router = useRouter();
+export const getServerSideProps: GetServerSideProps = async (context) => {
+  const session = await getSession(context);
+  if (!session) {
+    context.res.writeHead(302, {
+      location: "/",
+    });
+    context.res.end();
+  }
+  return {
+    props: { hasSession: !!session },
+  };
+};
 
+const Graph: NextPage = ({ hasSession }) => {
   const [nodeData, setNodeData] = useState<{
     nodes: DiscordGuildData[];
   } | null>(null);
   const isGatheringDataRef = useRef<boolean>(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const pointerDataRef = useRef<{
     isPointerDown: Boolean;
@@ -75,12 +86,6 @@ const Graph: NextPage = () => {
   });
 
   const newViewBoxRef = useRef<ViewBox>({ x: 0, y: 0, width: 0, height: 0 });
-
-  const signOutCallback = useCallback(() => {
-    signOut({
-      callbackUrl: "/",
-    });
-  }, []);
 
   const onTick = useCallback(() => {
     if (
@@ -163,8 +168,54 @@ const Graph: NextPage = () => {
     svgRef.current?.setAttribute("viewBox", viewBoxString);
   }, []);
 
+  const onWindowResize = useCallback(() => {
+    if (
+      containerRef.current &&
+      svgRef.current &&
+      svgRef.current.childNodes.length > 0
+    ) {
+      const width = containerRef.current.clientWidth;
+      const height = containerRef.current.clientHeight;
+
+      svgRef.current.setAttribute("width", width);
+      svgRef.current.setAttribute("height", height);
+      viewboxRef.current.width = width;
+      viewboxRef.current.height = height;
+      svgRef.current.setAttribute(
+        "viewBox",
+        getViewBoxString(
+          viewboxRef.current.x,
+          viewboxRef.current.y,
+          viewboxRef.current.width,
+          viewboxRef.current.height
+        )
+      );
+    }
+  }, []);
+
+  // const onDrag = useCallback((d) => {
+  //   d.fx = d3.event.x;
+  //   d.fy = d3.event.y;
+  // }, []);
+
+  // const onDragEnd = useCallback((d) => {
+  //   d.fx = null;
+  //   d.fy = null;
+  // }, []);
+
+  // const onDragStart = useCallback((d) => {
+  //   d.fx = d.x;
+  //   d.fy = d.y;
+  // }, []);
+
+  const signOutCallback = useCallback(() => {
+    setNodeData(null);
+    signOut({
+      callbackUrl: "/",
+    });
+  }, []);
+
   useEffect(() => {
-    console.log("effect");
     if (svgRef.current && svgRef.current.childNodes.length < 1) {
       if (!nodeData) {
         if (!isGatheringDataRef.current) {
@@ -188,19 +239,22 @@ const Graph: NextPage = () => {
         return;
       }
 
-      viewboxRef.current.width = svgRef.current.clientWidth;
-      viewboxRef.current.height = svgRef.current.clientHeight;
+      viewboxRef.current.width = containerRef.current.clientWidth;
+      viewboxRef.current.height = containerRef.current.clientHeight;
 
       const svg = d3.select(svgRef.current);
-      svg.attr(
-        "viewBox",
-        getViewBoxString(
-          viewboxRef.current.x,
-          viewboxRef.current.y,
-          viewboxRef.current.width,
-          viewboxRef.current.height
+      svg
+        .attr(
+          "viewBox",
+          getViewBoxString(
+            viewboxRef.current.x,
+            viewboxRef.current.y,
+            viewboxRef.current.width,
+            viewboxRef.current.height
+          )
         )
-      );
+        .attr("width", viewboxRef.current.width)
+        .attr("height", viewboxRef.current.height);
 
       simulationRef.current = d3
         .forceSimulation(nodeData.nodes)
@@ -214,20 +268,25 @@ const Graph: NextPage = () => {
         )
         .on("tick", onTick);
 
-      const groups = svg
-        .selectAll("node")
+      graphDataRef.current.nodes = svg
+        .selectAll("circle")
         .data(nodeData.nodes)
         .enter()
-        .append("g")
-        .attr("class", "node");
-
-      graphDataRef.current.nodes = groups
         .append("circle")
         .attr("r", nodeSize)
         .attr("fill", "black");
-      // .call(d3.drag().on("drag", onDrag));
+      // .call(
+      //   d3
+      //     .drag()
+      //     .on("drag", onDrag)
+      //     .on("start", onDragStart)
+      //     .on("end", onDragEnd)
+      // );
 
-      graphDataRef.current.images = groups
+      graphDataRef.current.images = svg
+        .selectAll("image")
+        .data(nodeData.nodes)
+        .enter()
         .append("image")
         .attr("href", (d) => {
           // console.log(d.icon);
@@ -241,7 +300,10 @@ const Graph: NextPage = () => {
         .attr("clip-path", "url(#image-clip)")
         .attr("preserveAspectRatio", "xMidYMid slice");
 
-      graphDataRef.current.texts = groups
+      graphDataRef.current.texts = svg
+        .selectAll("text")
+        .data(nodeData.nodes)
+        .enter()
         .append("text")
         .attr("class", "node-label")
         .text((d) => d.name);
@@ -263,35 +325,21 @@ const Graph: NextPage = () => {
         svgRef.current.addEventListener("touchend", onPointerUp);
         svgRef.current.addEventListener("touchmove", onPointerMove);
       }
+
+      window.addEventListener("resize", onWindowResize);
     }
   }, [svgRef.current, nodeData]);
 
-  if (session.status === "unauthenticated") {
-    router.push("/");
-    return null;
-  }
-
   return (
-    <div className="w-full h-full flex flex-col">
-      <header>
-        <nav className={`bg-blue-400 p-6 flex items-center justify-between`}>
-          <span className={`uppercase text-gray-50 font-bold`}>B3LONG</span>
-          <span className={`uppercase text-gray-50 font-bold text-xl`}>
-            My Discord Communities
-          </span>
-          <button
-            onClick={signOutCallback}
-            className={`p-3 bg-yellow-400 rounded-md`}
-          >
-            Sign Out
-          </button>
-        </nav>
+    <div className="w-full h-full">
+      <header className={`absolute top-0 left-0 right-0`}>
+        <NavBar isLogged={hasSession} signOutCallback={signOutCallback} />
       </header>
-      <div className={`flex-1`}>
-        <svg ref={svgRef} className={`w-full h-full`}></svg>
+      <div ref={containerRef} className={`w-full h-full`}>
+        <svg ref={svgRef}></svg>
         {!nodeData ? (
           <div
-            className={`absolute top-0 right-0 left-0 bottom-0 bg-gray-900/70 flex items-center justify-center`}
+            className={`absolute top-0 right-0 left-0 bottom-0 bg-dark/70 flex items-center justify-center`}
           >
             <Loader />
           </div>
