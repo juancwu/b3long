@@ -15,6 +15,7 @@ Things that were done:
 - A simple graph with floating nodes that represent each server.
 - Show server icon if available. Include GIF if available.
 - Show server name.
+- Add Discord OAUTH2 sign in process with NextAuth.
 
 Things that could have been done better:
 
